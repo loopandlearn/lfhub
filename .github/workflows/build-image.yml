@@ -1,12 +1,13 @@
 name: Build and Push lfhub Image
 
 # The image is built by the .NET SDK (`/t:PublishContainer`) for linux-x64 and
-# linux-arm64 and pushed to ghcr.io/<owner>/<repository>. Only main is built and
-# pushed; a manual run on another branch runs the tests alone.
+# linux-arm64 and pushed to ghcr.io/<owner>/<repository>: main as `latest`, dev as
+# `dev`, each also under its commit's SHA. A manual run on another branch runs the
+# tests alone.
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths-ignore: ['**/*.md']
   workflow_dispatch:
 
@@ -53,7 +54,7 @@ jobs:
 
   build-and-push:
     needs: test
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     concurrency:
       group: build-${{ github.workflow }}
@@ -78,10 +79,11 @@ jobs:
       - name: Build and push image
         env:
           REPOSITORY: ${{ github.repository }}
+          CHANNEL: ${{ github.ref == 'refs/heads/main' && 'latest' || 'dev' }}
         run: >
           dotnet publish lfhub.csproj -c Release --self-contained false
           /t:PublishContainer
           -p:ContainerRegistry=ghcr.io
           -p:ContainerRepository=${REPOSITORY,,}
           -p:RepositoryUrl=${{ github.server_url }}/${{ github.repository }}
-          '-p:ContainerImageTags="latest;${{ github.sha }}"'
+          "-p:ContainerImageTags=\"${CHANNEL};${{ github.sha }}\""

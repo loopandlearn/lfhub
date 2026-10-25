@@ -10,6 +10,9 @@ One hub serves one family and one person.
 > can fail. Keep LoopFollow's own alarms in mind as the fallback, and talk to your
 > care team about how you rely on alerts.
 
+The image `ghcr.io/loopandlearn/lfhub:dev` is built from the `dev` branch; released
+versions will be tagged `latest`.
+
 ## What you need
 
 - A machine that is always on and can run containers: a small cloud server, a
@@ -57,7 +60,7 @@ services:
       - db:/var/lib/postgresql/data
 
   lfhub:
-    image: ghcr.io/loopandlearn/lfhub:latest
+    image: ghcr.io/loopandlearn/lfhub:dev
     restart: unless-stopped
     depends_on: [db]
     environment:
@@ -116,7 +119,7 @@ spec:
     spec:
       containers:
         - name: lfhub
-          image: ghcr.io/loopandlearn/lfhub:latest
+          image: ghcr.io/loopandlearn/lfhub:dev
           ports:
             - containerPort: 8080
           envFrom:

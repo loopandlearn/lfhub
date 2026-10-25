@@ -421,9 +421,9 @@ tests need Postgres: set `LFHUB_TEST_DATABASE` to a connection string whose
 user may create databases (each run creates and drops its own); without it they
 are skipped. Test fixtures are synthetic.
 
-A push to `main` runs the tests (with a Postgres service) and checks formatting;
+A push to `main` or `dev` runs the tests (with a Postgres service) and checks formatting;
 only then is the image built for linux-x64 and linux-arm64 with
 `dotnet publish /t:PublishContainer` and pushed to `ghcr.io/<owner>/<repository>`
-as `latest` and as the commit's SHA.
+as `latest` from `main` and `dev` from `dev`, and as the commit's SHA.
 
 Setting up and running a hub: [docs/SETUP.md](docs/SETUP.md).
