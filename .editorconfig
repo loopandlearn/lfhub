@@ -1,0 +1,24 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{json,yml,yaml,csproj,props,slnx}]
+indent_style = space
+indent_size = 2
+
+[*.cs]
+indent_style = space
+indent_size = 4
+
+# The hub logs a few lines a minute with structured templates; LoggerMessage
+# delegates (CA1848) and guarding argument evaluation (CA1873) buy nothing at that rate.
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1873.severity = none
+
+[tests/**.cs]
+# Test names read Subject_Behaviour.
+dotnet_diagnostic.CA1707.severity = none

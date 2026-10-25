@@ -1,0 +1,87 @@
+name: Build and Push lfhub Image
+
+# The image is built by the .NET SDK (`/t:PublishContainer`) for linux-x64 and
+# linux-arm64 and pushed to ghcr.io/<owner>/<repository>. Only main is built and
+# pushed; a manual run on another branch runs the tests alone.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build
+        run: dotnet build lfhub.slnx -c Release
+
+      - name: Check formatting
+        run: dotnet format lfhub.slnx --verify-no-changes --no-restore
+
+      - name: Test
+        env:
+          LFHUB_TEST_DATABASE: Host=localhost;Port=5432;Username=postgres
+        run: dotnet test --solution lfhub.slnx -c Release --no-build
+
+  build-and-push:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: build-${{ github.workflow }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: >
+          dotnet publish lfhub.csproj -c Release --self-contained false
+          /t:PublishContainer
+          -p:ContainerRegistry=ghcr.io
+          -p:ContainerRepository=${REPOSITORY,,}
+          -p:RepositoryUrl=${{ github.server_url }}/${{ github.repository }}
+          '-p:ContainerImageTags="latest;${{ github.sha }}"'
