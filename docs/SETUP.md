@@ -13,6 +13,17 @@ One hub serves one family and one person.
 The image `ghcr.io/loopandlearn/lfhub:dev` is built from the `dev` branch; released
 versions will be tagged `latest`.
 
+To build the image yourself, with the .NET 10 SDK and Docker installed:
+
+```sh
+git clone -b dev https://github.com/loopandlearn/lfhub && cd lfhub
+dotnet publish lfhub.csproj -c Release -r linux-x64 /t:PublishContainer -p:ContainerRepository=lfhub -p:ContainerImageTags=dev
+```
+
+Use `-r linux-arm64` for an arm64 machine such as a Raspberry Pi. This puts
+`lfhub:dev` in the local Docker; use `image: lfhub:dev` below. A fork of the repository builds and pushes
+`ghcr.io/<you>/lfhub` with its own GitHub Actions in the same way.
+
 ## What you need
 
 - A machine that is always on and can run containers: a small cloud server, a
