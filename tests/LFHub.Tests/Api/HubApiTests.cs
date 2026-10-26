@@ -281,6 +281,40 @@ public sealed class HubApiTests(PostgresFixture db) : IClassFixture<PostgresFixt
     }
 
     [Fact]
+    public async Task SharedApnsKey_CanBeAMembersOwnKey()
+    {
+        var app = $"org.example.shared{Guid.NewGuid():N}";
+        var (_, adminKey) = await DeviceAsync();
+        var (_, ownerOfKey) = await MemberAsync(adminKey);
+        var (_, sharer) = await MemberAsync(adminKey);
+        _time.Advance(TimeSpan.FromSeconds(61));
+        (await SendAsync(HttpMethod.Put, "/v1/device/apns", ownerOfKey, new
+        {
+            token = PushToken(),
+            environment = "sandbox",
+            bundleId = app,
+            teamId = "TEAM000000",
+            keyId = "KEY0000000",
+            key = P8,
+        })).EnsureSuccessStatusCode();
+
+        Assert.Equal(HttpStatusCode.NoContent, await RegisterSharedAsync(sharer, bundleId: app));
+        var me = await (await SendAsync(HttpMethod.Get, "/v1/me", sharer)).Content.ReadFromJsonAsync<JsonObject>(Ct);
+        Assert.True(me!["device"]!["apnsKeyShared"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task DeviceLists_NameThePatient()
+    {
+        var (_, adminKey) = await DeviceAsync();
+        var code = await InviteAsync(adminKey);
+        var byInvite = await (await _client.PostAsJsonAsync("/v1/join/devices", new { code }, Ct)).Content.ReadFromJsonAsync<JsonObject>(Ct);
+        Assert.False(string.IsNullOrEmpty(byInvite!["patientName"]!.GetValue<string>()));
+        var byToken = await (await _client.PostAsJsonAsync("/v1/claim/devices", new { setupToken = SetupToken }, Ct)).Content.ReadFromJsonAsync<JsonObject>(Ct);
+        Assert.Equal(byInvite["patientName"]!.GetValue<string>(), byToken!["patientName"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task JoinPage_TellsACameraUserToOpenLoopFollow()
     {
         var page = await _client.GetStringAsync("/join", Ct);

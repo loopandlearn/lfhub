@@ -101,6 +101,13 @@ internal sealed class EngineHarness
     /// The 30-second tick: fetch what is due; alarms on their minute.
     public Task TickAsync() => Engine.EvaluateAsync(Patient.Id, true, false, CancellationToken.None);
 
+    /// POST /v1/device/alarm/{id}/handled: the store's write and the engine's note of it.
+    public void Handled(Guid deviceId, Guid alarmId)
+    {
+        Store.AlarmHandled(deviceId, alarmId);
+        Engine.AlarmHandled(deviceId, alarmId);
+    }
+
     /// Something arrived from the app (Kick with immediate).
     public Task FromAppAsync() => Engine.EvaluateAsync(Patient.Id, false, true, CancellationToken.None);
 

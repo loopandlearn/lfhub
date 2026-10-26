@@ -20,7 +20,7 @@ public sealed record SetupTokenRequest(string SetupToken);
 public sealed record JoinRequest(string Code, string? DeviceName, Guid? Replace = null, Guid? CopyFrom = null);
 public sealed record InviteCodeRequest(string Code);
 public sealed record RoleRequest(string Role);
-/// <param name="KeyId">Null, with no key, to push with an admin device's key for the same team and app.</param>
+/// <param name="KeyId">Null, with no key, to push with another device's key for the same team and app.</param>
 public sealed record ApnsRequest(string Token, string Environment, string BundleId, string TeamId, string? KeyId,
     string? Key);
 public sealed record DexcomRequest(string Username, string Password, string? Server);
@@ -135,7 +135,10 @@ public static partial class HubApi
         {
             if (!claims.TryTake("claim")) return TooManyRequests(ctx, "too many claim attempts");
             if (!FixedEquals(req.SetupToken, setupToken))
+            {
+                log.LogWarning("Claim refused: wrong setup token");
                 return Results.Problem("Invalid setup token", statusCode: 403);
+            }
             if (req.Replace is not null && req.CopyFrom is not null)
                 return Results.Problem("replace and copyFrom exclude each other", statusCode: 400);
 
@@ -149,14 +152,18 @@ public static partial class HubApi
 
         // The devices a phone joining with the setup token can take over or copy; empty on an
         // unclaimed hub. Counts against the same limit as a claim.
-        v1.MapPost("/claim/devices", async (SetupTokenRequest req, HttpContext ctx, HubStore store) =>
+        v1.MapPost("/claim/devices", async (SetupTokenRequest req, HttpContext ctx, HubStore store,
+            ILogger<HubEngine> log) =>
         {
             if (!claims.TryTake("claim")) return TooManyRequests(ctx, "too many claim attempts");
             if (!FixedEquals(req.SetupToken, setupToken))
+            {
+                log.LogWarning("Device listing refused: wrong setup token");
                 return Results.Problem("Invalid setup token", statusCode: 403);
-            return Results.Ok(JoinableDevices(await store.PatientAsync() is { } patient
-                ? await store.DevicesForPatientAsync(patient.Id)
-                : []));
+            }
+            var patient = await store.PatientAsync();
+            return Results.Ok(JoinableDevices(patient is null ? [] : await store.DevicesForPatientAsync(patient.Id),
+                patient?.Name));
         });
 
         // An admin's invite: a code that lets one phone join as a member, once, within a day.
@@ -172,12 +179,17 @@ public static partial class HubApi
         });
 
         // The devices a phone joining with an invite can take over (members only) or copy.
-        v1.MapPost("/join/devices", async (InviteCodeRequest req, HttpContext ctx, HubStore store) =>
+        v1.MapPost("/join/devices", async (InviteCodeRequest req, HttpContext ctx, HubStore store,
+            ILogger<HubEngine> log) =>
         {
             if (!claims.TryTake("claim")) return TooManyRequests(ctx, "too many claim attempts");
             if (await store.InvitePatientAsync(req.Code ?? "", time.GetUtcNow().UtcDateTime) is not { } patientId)
+            {
+                log.LogWarning("Device listing refused: unknown, used or expired invite");
                 return Results.Problem("unknown, used or expired invite", statusCode: 403);
-            return Results.Ok(JoinableDevices(await store.DevicesForPatientAsync(patientId)));
+            }
+            return Results.Ok(JoinableDevices(await store.DevicesForPatientAsync(patientId),
+                (await store.GetPatientAsync(patientId))?.Name));
         });
 
         // Joins with an invite as a member device, which uses the invite up.
@@ -187,7 +199,10 @@ public static partial class HubApi
             if (!claims.TryTake("claim")) return TooManyRequests(ctx, "too many claim attempts");
             var now = time.GetUtcNow().UtcDateTime;
             if (await store.InvitePatientAsync(req.Code ?? "", now) is not { } patientId)
+            {
+                log.LogWarning("Join refused: unknown, used or expired invite");
                 return Results.Problem("unknown, used or expired invite", statusCode: 403);
+            }
             if (req.Replace is not null && req.CopyFrom is not null)
                 return Results.Problem("replace and copyFrom exclude each other", statusCode: 400);
             if ((req.Replace ?? req.CopyFrom) is { } targetId)
@@ -198,7 +213,10 @@ public static partial class HubApi
                     return Results.Problem("an invite cannot take over an admin device", statusCode: 403);
             }
             if (!await store.UseInviteAsync(req.Code!, now))
+            {
+                log.LogWarning("Join refused: the invite was used meanwhile");
                 return Results.Problem("unknown, used or expired invite", statusCode: 403);
+            }
             return await JoinAsync(store, engine, log, patientId, req.DeviceName, req.Replace, req.CopyFrom,
                 Roles.Member);
         });
@@ -219,7 +237,7 @@ public static partial class HubApi
             if (await store.RedeemReceiptAsync(AlarmReceipts.Hash(token), time.GetUtcNow().UtcDateTime) is not { } taken)
                 return Results.Problem("unknown, used or expired receipt", statusCode: 404);
             log.LogInformation("Alarm {Alarm} received on {Device}{Recorded}", taken.AlarmId, taken.DeviceId,
-                taken.Recorded ? "" : " (not the sounding alarm, or already received)");
+                taken.Recorded ? "" : " (not recorded: a test alarm, an alarm that is no longer sounding, or a repeat receipt)");
             return Results.NoContent();
         });
 
@@ -300,15 +318,15 @@ public static partial class HubApi
             if (req.Key is not null && Apns.ApnsClient.KeyProblem(req.Key) is { } keyProblem)
                 return Results.Problem(keyProblem, statusCode: 400);
 
-            // Without a key id the device asks for an admin device's key; without a key it keeps
-            // the one it has, or takes an admin device's.
+            // Without a key id the device asks for another device's key; without a key it keeps
+            // the one it has, or takes another device's.
             if (string.IsNullOrWhiteSpace(req.KeyId) || (req.Key is null && device.Apns is null))
             {
                 if (req.Key is not null)
                     return Results.Problem("keyId is required with key", statusCode: 400);
                 if (!await store.SetSharedApnsAsync(device.Id, req.Token.Trim(), req.Environment,
                         req.BundleId.Trim(), req.TeamId.Trim()))
-                    return Results.Problem("this device needs its own APN key: no admin device has one for this team and app",
+                    return Results.Problem("this device needs its own APN key: no other device has one for this team and app",
                         statusCode: 400);
                 engine.Kick(device.PatientId);
                 return Results.NoContent();
@@ -423,6 +441,7 @@ public static partial class HubApi
         {
             if (await Authenticate(ctx, store) is not { } device) return Results.Unauthorized();
             await store.AlarmHandledAsync(device.Id, alarmId);
+            engine.AlarmHandled(device.Id, alarmId);
             log.LogInformation("Alarm {Alarm} handled on {Device}", alarmId, device.Id);
             engine.Kick(device.PatientId, immediate: true);
             return Results.NoContent();
@@ -460,6 +479,7 @@ public static partial class HubApi
             var result = await apns.SendAlarmAsync(cfg, testId, title, "Sent from LF Hub", null, req.Sound, "bell", "category",
                 device.CriticalAlerts, true, false, testReceipt, ct);
             await engine.TrackPushAsync(device.Id, result, HubEngine.PushKind.Alarm);
+            log.LogInformation("Test alarm to {Device}: {Status}", device.Id, result.Status);
             return result.Delivered
                 ? Results.NoContent()
                 : Results.Problem($"APNs: {result.Status}", statusCode: 502);
@@ -510,10 +530,12 @@ public static partial class HubApi
                 : Results.Problem("the patient is not followed yet", statusCode: 503);
         });
 
-        v1.MapDelete("/device", async (HttpContext ctx, HubStore store) =>
+        v1.MapDelete("/device", async (HttpContext ctx, HubStore store, HubEngine engine, ILogger<HubEngine> log) =>
         {
             if (await Authenticate(ctx, store) is not { } device) return Results.Unauthorized();
             await store.DeleteDeviceAsync(device.Id);
+            log.LogInformation("Device {Device} left the hub", device.Id);
+            engine.Reload();
             return Results.NoContent();
         });
 
@@ -646,8 +668,9 @@ public static partial class HubApi
     private static string InviteCode() =>
         Convert.ToBase64String(RandomNumberGenerator.GetBytes(20)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    private static object JoinableDevices(IEnumerable<Device> devices) => new
+    private static object JoinableDevices(IEnumerable<Device> devices, string? patientName) => new
     {
+        patientName,
         devices = devices.Select(d => new
         {
             id = d.Id,

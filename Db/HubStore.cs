@@ -514,7 +514,7 @@ public sealed class HubStore : IHubStore
     /// <summary>
     /// Stores the device's APNs registration. A null <paramref name="key"/> keeps the stored key,
     /// so a token refresh need not resend the .p8. A device that sends its own key stops sharing
-    /// one; devices sharing an admin device's key for the same team and bundle id follow it.
+    /// one; devices sharing a key for the same team and bundle id follow a new one.
     /// </summary>
     public async Task SetApnsAsync(Guid deviceId, string token, string env, string bundleId, string teamId,
         string keyId, string? key)
@@ -538,7 +538,7 @@ public sealed class HubStore : IHubStore
         {
             await using var follow = _ds.CreateCommand(
                 "UPDATE lfhub.devices d SET apns_key_id = @k, apns_key_sealed = @ks FROM lfhub.devices a " +
-                "WHERE a.id = @id AND a.role = 'admin' AND d.patient_id = a.patient_id AND d.apns_key_shared " +
+                "WHERE a.id = @id AND d.patient_id = a.patient_id AND d.apns_key_shared " +
                 "AND d.apns_team_id = @tm AND d.apns_bundle_id = @b");
             follow.Parameters.AddWithValue("k", keyId);
             follow.Parameters.AddWithValue("ks", sealedKey);
@@ -867,8 +867,9 @@ public sealed class HubStore : IHubStore
     }
 
     /// <summary>
-    /// Registers the device for APNs with the key of an admin device of the patient that pushes
-    /// for the same team and bundle id; false when there is none.
+    /// Registers the device for APNs with the key of another device of the patient that pushes
+    /// for the same team and bundle id with a key of its own, an admin device's first; false when
+    /// there is none.
     /// </summary>
     public async Task<bool> SetSharedApnsAsync(Guid deviceId, string token, string env, string bundleId,
         string teamId)
@@ -877,10 +878,10 @@ public sealed class HubStore : IHubStore
             "UPDATE lfhub.devices d SET apns_token = @t, apns_env = @e, apns_bundle_id = @b, apns_team_id = @tm, " +
             "apns_key_id = a.apns_key_id, apns_key_sealed = a.apns_key_sealed, apns_key_shared = true, " +
             "last_badge = NULL, last_push_status = NULL, push_token_gone = false " +
-            "FROM (SELECT apns_key_id, apns_key_sealed FROM lfhub.devices WHERE role = 'admin' AND NOT apns_key_shared " +
-            "AND apns_key_sealed IS NOT NULL AND apns_team_id = @tm AND apns_bundle_id = @b " +
+            "FROM (SELECT apns_key_id, apns_key_sealed FROM lfhub.devices WHERE NOT apns_key_shared " +
+            "AND apns_key_sealed IS NOT NULL AND apns_team_id = @tm AND apns_bundle_id = @b AND id <> @id " +
             "AND patient_id = (SELECT patient_id FROM lfhub.devices WHERE id = @id) " +
-            "ORDER BY last_seen_at DESC NULLS LAST LIMIT 1) a WHERE d.id = @id");
+            "ORDER BY role = 'admin' DESC, last_seen_at DESC NULLS LAST LIMIT 1) a WHERE d.id = @id");
         cmd.Parameters.AddWithValue("t", token);
         cmd.Parameters.AddWithValue("e", env);
         cmd.Parameters.AddWithValue("b", bundleId);

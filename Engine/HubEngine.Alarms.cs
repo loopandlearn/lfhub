@@ -42,6 +42,17 @@ public sealed partial class HubEngine
     private readonly ConcurrentDictionary<Guid, DateTime> _latestBgNotified = new();
     /// The time of the newest reading the speak step has taken for each device, spoken or not.
     private readonly ConcurrentDictionary<Guid, DateTime> _lastSpoken = new();
+    /// When the app last handled each alarm, by device and alarm.
+    private readonly ConcurrentDictionary<(Guid Device, Guid Alarm), DateTime> _handledAt = new();
+
+    /// <summary>
+    /// An alarm the app handled counts as snoozed this long, so it does not fire again
+    /// before the alarm upload that carries the app's snooze has arrived.
+    /// </summary>
+    internal static readonly TimeSpan HandledGrace = TimeSpan.FromMinutes(2);
+
+    /// Records that the app snoozed or acknowledged <paramref name="alarmId"/> on the device.
+    public void AlarmHandled(Guid deviceId, Guid alarmId) => _handledAt[(deviceId, alarmId)] = UtcNow;
     /// Stops APNs did not accept, by device and alarm, with when the first was tried.
     private readonly ConcurrentDictionary<(Guid Device, Guid Alarm), (ActiveAlarm Alarm, AlarmStopReason Reason, DateTime Since)>
         _failedStops = new();
@@ -105,6 +116,12 @@ public sealed partial class HubEngine
         {
             var copy = a.Clone();
             if (device.HubDisabledAlarms.Contains(copy.Id)) copy.IsEnabled = false;
+            if (_handledAt.TryGetValue((device.Id, copy.Id), out var handled))
+            {
+                var graceEnd = handled + HandledGrace;
+                if (graceEnd <= now) _handledAt.TryRemove((device.Id, copy.Id), out _);
+                else if (copy.SnoozedUntil is not { } until || until < graceEnd) copy.SnoozedUntil = graceEnd;
+            }
             return copy;
         }).ToList();
 

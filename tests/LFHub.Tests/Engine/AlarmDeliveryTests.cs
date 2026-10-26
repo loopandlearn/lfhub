@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using LFHub.Apns;
 using LFHub.Db;
 using LFHub.Engine;
@@ -127,7 +128,7 @@ public class AlarmDeliveryTests
         var (h, device, low) = await FiredLowAsync();
         h.Store.BeforeRecordAlarmPush = () =>
         {
-            h.Store.AlarmHandled(device.Id, low.Id);
+            h.Handled(device.Id, low.Id);
             h.Store.BeforeRecordAlarmPush = null;
         };
         await h.TicksAsync(TimeSpan.FromMinutes(1));
@@ -168,7 +169,7 @@ public class AlarmDeliveryTests
     {
         // Acknowledge (snooze 0) leaves the alarm unsnoozed; only "handled" tells the hub.
         var (h, device, low) = await FiredLowAsync();
-        h.Store.AlarmHandled(device.Id, low.Id);
+        h.Handled(device.Id, low.Id);
         Assert.Null(device.ActiveAlarm);
         Assert.Null(device.AlarmState!.CurrentAlarmId);
         await h.FromAppAsync();
@@ -196,7 +197,7 @@ public class AlarmDeliveryTests
     public async Task Handled_ThenSnooze_FiresAgainOnceTheSnoozeEnds()
     {
         var (h, device, low) = await FiredLowAsync();
-        h.Store.AlarmHandled(device.Id, low.Id);
+        h.Handled(device.Id, low.Id);
         var snoozed = low.Clone();
         snoozed.SnoozedUntil = h.Now.AddMinutes(10);
         h.Store.SetAlarms(device.Id, [snoozed], new AlarmConfiguration());
@@ -225,6 +226,36 @@ public class AlarmDeliveryTests
         await h.TicksAsync(TimeSpan.FromMinutes(2));
         Assert.Single(h.Apns.Alarms);
         Assert.Single(h.Apns.Stops);
+    }
+
+    [Fact]
+    public async Task Handled_HoldsTheAlarmOffUntilTheAppsSnoozeCanArrive()
+    {
+        // Phone battery: a condition that holds check after check, unlike a BG alarm.
+        var h = new EngineHarness();
+        var battery = Alarm.Create(AlarmType.Battery);
+        battery.Threshold = 20;
+        var device = h.AlarmDevice([battery]);
+        h.Nightscout.Route("/api/v1/devicestatus.json", _ => new JsonArray(new JsonObject
+        {
+            ["created_at"] = h.Now.ToString("O"),
+            ["pump"] = new JsonObject { ["clock"] = h.Now.ToString("O") },
+            ["uploader"] = new JsonObject { ["battery"] = 10 },
+        }).ToJsonString());
+        h.Readings(120, 120);
+        await h.ReconcileAsync();
+        await h.NewDataAsync();
+        Assert.Equal(battery.Id, Assert.Single(h.Apns.Alarms).AlarmId);
+
+        h.Handled(device.Id, battery.Id);
+        await h.FromAppAsync();
+        await h.TicksAsync(HubEngine.HandledGrace - TimeSpan.FromSeconds(30));
+        Assert.Single(h.Apns.Alarms);
+
+        // Without a snooze from the app, it fires again once the grace is over.
+        await h.TicksAsync(TimeSpan.FromMinutes(2));
+        Assert.True(h.Apns.Alarms.Count > 1);
+        Assert.All(h.Apns.Alarms, a => Assert.Equal(battery.Id, a.AlarmId));
     }
 
     [Fact]
@@ -367,7 +398,7 @@ public class AlarmDeliveryTests
     {
         var (h, device, low) = await FiredLowAsync(edit: a => a.RepeatSoundOption = RepeatSoundOption.Never);
         var first = h.Apns.Alarms[0].Receipt;
-        h.Store.AlarmHandled(device.Id, low.Id);
+        h.Handled(device.Id, low.Id);
         h.NextReading(65);
         await h.NewDataAsync();
         Assert.Equal(2, h.Apns.Alarms.Count);
@@ -493,7 +524,7 @@ public class AlarmDeliveryTests
         h.Readings(90, 60);
         await h.ReconcileAsync();
         await h.NewDataAsync();
-        h.Store.AlarmHandled(device.Id, temporary.Id);
+        h.Handled(device.Id, temporary.Id);
         h.NextReading(55);
         await h.NewDataAsync();
         Assert.Single(h.Apns.Alarms);
@@ -525,7 +556,7 @@ public class AlarmDeliveryTests
         Assert.Empty(h.Apns.Stops);
         Assert.Equal(temporary.Id, device.ActiveAlarm?.AlarmId);
 
-        h.Store.AlarmHandled(device.Id, temporary.Id);
+        h.Handled(device.Id, temporary.Id);
         await h.FromAppAsync();
         await h.TicksAsync(TimeSpan.FromMinutes(3));
         Assert.Equal(4, h.Apns.Alarms.Count);
@@ -784,7 +815,7 @@ public class AlarmDeliveryTests
         var (h, device, low) = await FiredLowAsync();
         h.Store.BeforeSave = () =>
         {
-            h.Store.AlarmHandled(device.Id, low.Id);
+            h.Handled(device.Id, low.Id);
             h.Store.BeforeSave = null;
         };
         await h.TicksAsync(TimeSpan.FromMinutes(1));
