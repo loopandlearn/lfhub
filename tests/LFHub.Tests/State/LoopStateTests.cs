@@ -103,6 +103,7 @@ public class LoopStateTests
         public readonly FakeNightscout Ns = new("loop.example.org");
         private readonly HttpClient _http;
         private int _dsCalls;
+        public string SiteChanges = """[{"created_at":"2026-10-23T18:00:00.000Z"}]""";
 
         private Patient()
         {
@@ -113,7 +114,7 @@ public class LoopStateTests
                 {
                     "Sensor Start" => """[{"created_at":"2026-10-20T09:15:00.123+02:00"}]""",
                     "Insulin Change" => """[{"created_at":"2026-10-22T07:00:00.000Z"}]""",
-                    "Site Change" => "[]",
+                    "Site Change" => SiteChanges,
                     _ => Treatments,
                 })
                 .Route("/api/v2/properties/dbsize",
@@ -301,10 +302,9 @@ public class LoopStateTests
         using var p = await Patient.FollowAsync();
         var bundle = p.State.Bundle();
         var parts = bundle["parts"]!.AsObject();
-        foreach (var part in new[] { "entries", "profile", "devicestatus", "treatments", "sage", "iage", "dbsize" })
+        foreach (var part in new[] { "entries", "profile", "devicestatus", "treatments", "sage", "cage", "iage", "dbsize" })
             Assert.True(parts.ContainsKey(part), part);
         var version = p.State.BundleVersion;
-        Assert.False(parts.ContainsKey("cage"));
         Assert.Equal(version, bundle["version"]!.GetValue<long>());
 
         var changed = 0;
@@ -313,6 +313,18 @@ public class LoopStateTests
         await p.RefreshAsync();
         Assert.True(p.State.BundleVersion > version);
         Assert.Equal(p.State.BundleVersion - version, changed);
+    }
+
+    [Fact]
+    public async Task Bundle_AgeLookupPartsFollowNightscout()
+    {
+        using var p = await Patient.FollowAsync();
+        p.SiteChanges = """[{"created_at":"2026-10-24T12:05:00.000Z"}]""";
+        p.Now = p.Now.AddMinutes(11);
+        await p.RefreshAsync();
+        var cage = p.State.Bundle()["parts"]!["cage"]!["data"]!.AsArray();
+        Assert.Equal("2026-10-24T12:05:00.000Z", cage[0]!["created_at"]!.ToString());
+        Assert.Equal(D("2026-10-23T18:00:00Z"), p.State.BuildAlarmData(Sv, p.Now)!.PumpInsertTime);
     }
 
     [Theory]

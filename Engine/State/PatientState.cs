@@ -459,6 +459,9 @@ public sealed class PatientState : IDisposable
 
     /// Treatments.swift WebLoadNSTreatments, then the insert-time lookups
     /// SensorStart.swift, SiteChange.swift and InsulinCartridgeChange.swift make.
+    /// The lookups run on every fetch, as a device starting cold reads their parts and
+    /// gets what its own lookup would get now. Only the lookups LoopFollow would make
+    /// next update the insert times.
     private async Task FetchTreatmentsAsync(CancellationToken ct)
     {
         var start = UtcNow();
@@ -489,7 +492,10 @@ public sealed class PatientState : IDisposable
             return;
         }
 
-        foreach (var lookup in lookups ?? [])
+        if (lookups is null) return;
+        List<TreatmentsState.AgeFetch> kinds = [TreatmentsState.AgeFetch.Sage, TreatmentsState.AgeFetch.Cage];
+        if (needs.IageVisible) kinds.Add(TreatmentsState.AgeFetch.Iage);
+        foreach (var lookup in kinds)
         {
             var now = UtcNow();
             var (eventType, sinceDays) = lookup switch
@@ -506,7 +512,7 @@ public sealed class PatientState : IDisposable
             {
                 var response = await GetAsync(eventType, "/api/v1/treatments.json", ageQuery, ct,
                     lookup.ToString().ToLowerInvariant());
-                lock (_lock) _treatments.ApplyAgeFetch(lookup, response);
+                if (lookups.Contains(lookup)) lock (_lock) _treatments.ApplyAgeFetch(lookup, response);
             }
             catch (FetchFailed)
             {
