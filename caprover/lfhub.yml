@@ -1,0 +1,70 @@
+# CapRover one-click app: PostgreSQL and LF Hub. Paste into Apps → One-Click Apps/Databases →
+# "TEMPLATE" (at the end of the list). See docs/SETUP.md.
+captainVersion: 4
+services:
+  $$cap_appname-db:
+    image: postgres:16
+    restart: always
+    volumes:
+      - $$cap_appname-db-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: lfhub
+      POSTGRES_PASSWORD: $$cap_db_pass
+      POSTGRES_DB: lfhub
+    caproverExtra:
+      notExposeAsWebApp: 'true'
+
+  $$cap_appname:
+    image: ghcr.io/loopandlearn/lfhub:$$cap_lfhub_version
+    restart: always
+    depends_on:
+      - $$cap_appname-db
+    environment:
+      DatabaseConnectionstring: Host=srv-captain--$$cap_appname-db;Port=5432;Username=lfhub;Password=$$cap_db_pass;Database=lfhub
+      LFHUB_MASTER_KEY: $$cap_master_key
+      LFHUB_SETUP_TOKEN: $$cap_setup_token
+      LFHUB_STATUS_KEY: $$cap_status_key
+    caproverExtra:
+      containerHttpPort: '8080'
+
+caproverOneClickApp:
+  variables:
+    - id: $$cap_lfhub_version
+      label: Image tag
+      defaultValue: dev
+      description: The tag of ghcr.io/loopandlearn/lfhub. `dev` follows the dev branch; `latest` follows releases.
+      validRegex: /^[A-Za-z0-9_.-]+$/
+    - id: $$cap_master_key
+      label: Master key (LFHUB_MASTER_KEY)
+      description: >-
+        Encrypts the stored passwords and keys. Make it with `openssl rand -base64 32` and keep it in a
+        password manager: the hub cannot recover it.
+      validRegex: /^[A-Za-z0-9+/]{43}=$/
+    - id: $$cap_setup_token
+      label: Setup token (LFHUB_SETUP_TOKEN)
+      description: The hub's master password, used to make a phone an owner. Keep it in a password manager.
+      defaultValue: $$cap_gen_random_hex(32)
+      validRegex: /^.{16,}$/
+    - id: $$cap_status_key
+      label: Status key (LFHUB_STATUS_KEY)
+      description: For a monitoring service, as /status?key=<this>&fresh=1.
+      defaultValue: $$cap_gen_random_hex(24)
+      validRegex: /^.{16,}$/
+    - id: $$cap_db_pass
+      label: Database password
+      defaultValue: $$cap_gen_random_hex(32)
+      validRegex: /^[A-Za-z0-9]{16,}$/
+  instructions:
+    start: >-
+      LF Hub follows one person's Nightscout and/or Dexcom Share data and drives LoopFollow on the
+      family's iPhones. It runs with its own PostgreSQL database. LF Hub is alpha software and not a
+      medical device. Before you continue, make the master key with `openssl rand -base64 32`.
+    end: >-
+      LF Hub is deployed. Open the app $$cap_appname, enable HTTPS and turn on "Force HTTPS" (the hub
+      must only be reached over HTTPS), then check that https://$$cap_appname.$$cap_root_domain/healthz
+      says ok. Save the setup token and the status key from the app's environment variables in your
+      password manager, then connect the first phone as described in docs/SETUP.md.
+  displayName: LF Hub
+  isOfficial: false
+  description: A per-family server that drives LoopFollow's badge, Live Activity and alarms over APNs.
+  documentation: https://github.com/loopandlearn/lfhub/blob/dev/docs/SETUP.md
