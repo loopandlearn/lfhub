@@ -84,6 +84,30 @@ public class AlarmDeliveryTests
     }
 
     [Fact]
+    public async Task RepeatingAlarm_IsDeliveredAgainAtTheTickNearestTheMinute()
+    {
+        var (h, _, low) = await FiredLowAsync();
+
+        // A check the app starts inside the minute delivers nothing and does not hold off
+        // the repeat; a tick that comes just before the minute delivers it.
+        h.Advance(TimeSpan.FromSeconds(40));
+        await h.FromAppAsync();
+        Assert.Single(h.Apns.Alarms);
+        h.Advance(TimeSpan.FromSeconds(19));
+        await h.TickAsync();
+        Assert.Equal(2, h.Apns.Alarms.Count);
+
+        // The next ticks keep to the minute although they fall a little early.
+        h.Advance(TimeSpan.FromSeconds(29));
+        await h.TickAsync();
+        Assert.Equal(2, h.Apns.Alarms.Count);
+        h.Advance(TimeSpan.FromSeconds(29));
+        await h.TickAsync();
+        Assert.Equal(3, h.Apns.Alarms.Count);
+        Assert.All(h.Apns.Alarms, p => Assert.Equal(low.Id, p.AlarmId));
+    }
+
+    [Fact]
     public async Task SnoozeFromTheApp_TakesEffectInsideTheMinuteBetweenChecks()
     {
         var (h, device, low) = await FiredLowAsync();
@@ -312,8 +336,8 @@ public class AlarmDeliveryTests
     }
 
     [Theory]
-    [InlineData(true, true, null, 59, false)]   // a cleared condition rings out the minute, received or not
-    [InlineData(true, true, null, 60, true)]
+    [InlineData(true, true, null, 44, false)]   // a cleared condition rings out the minute (to the nearest tick), received or not
+    [InlineData(true, true, null, 45, true)]
     [InlineData(false, false, null, 600, false)] // a single ring lasts 30 s from its delivery receipt
     [InlineData(false, false, 10, 39, false)]
     [InlineData(false, false, 10, 40, true)]
