@@ -612,6 +612,8 @@ public sealed partial class HubEngine : BackgroundService
             ["attributes-type"] = "GlucoseLiveActivityAttributes",
             ["attributes"] = new JsonObject { ["title"] = "LoopFollow" },
             ["content-state"] = ContentState(snapshot, now),
+            // The start asks iOS for the activity's update token, which the app reports.
+            ["input-push-token"] = 1,
             // iOS drops a start without an alert; empty and passive keeps it silent.
             ["alert"] = new JsonObject { ["title"] = "", ["body"] = "" },
             ["interruption-level"] = "passive",

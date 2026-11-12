@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using LFHub.Api;
 using LFHub.Apns;
@@ -14,6 +15,19 @@ public sealed partial class HubEngine
     private static readonly TimeSpan AlarmCheckInterval = TimeSpan.FromSeconds(60);
     /// A sounding alarm that repeats is delivered again this often until it is snoozed.
     private static readonly TimeSpan AlarmRepeatInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// The engine ticks every <see cref="Tick"/>: a check, a repeat or a stop that falls due
+    /// less than half a tick after one is taken at that tick, so each comes once a minute.
+    /// A property, since <see cref="Tick"/> is initialized in another file of this class.
+    /// </summary>
+    private static TimeSpan DueSlack => Tick / 2;
+
+    /// A sounding alarm is due to be delivered again: one that repeats, or one whose
+    /// delivery the phone has not confirmed, a minute after its last push.
+    private static bool RepeatDue([NotNullWhen(true)] ActiveAlarm? active, DateTime now) =>
+        active is { ConditionCleared: false } && (active.Repeat || active.DeliveredAt is null) &&
+        now - active.LastPushAt >= AlarmRepeatInterval - DueSlack;
 
     /// <summary>
     /// A system alarm is not stopped for a cleared condition before this: LoopFollow
@@ -90,7 +104,8 @@ public sealed partial class HubEngine
         if (!listed.AlarmsEnabled && listed.ActiveAlarm is null) return;
         var now = UtcNow;
         if (listed.AlarmsEnabled && !immediate && _lastAlarmCheck.TryGetValue(listed.Id, out var last) &&
-            now - last < AlarmCheckInterval)
+            now - last < AlarmCheckInterval - DueSlack && !RepeatDue(listed.ActiveAlarm, now) &&
+            !(listed.ActiveAlarm is { } rung && HasRungEnough(rung, now)))
             return;
 
         if (await _store.DeviceAsync(listed.Id) is not { } device) return;
@@ -186,8 +201,7 @@ public sealed partial class HubEngine
                 fire.PlaySound && fire.RepeatSound, now, now, null,
                 DisabledWhenFired: disable.Contains(fire.AlarmId));
         }
-        else if (active is not null && !active.ConditionCleared && (active.Repeat || active.DeliveredAt is null) &&
-                 now - active.LastPushAt >= AlarmRepeatInterval)
+        else if (RepeatDue(active, now))
         {
             // A repeating alarm is delivered again; any other alarm until the phone confirms one of its pushes.
             active = send = active with { LastPushAt = now };
@@ -321,7 +335,7 @@ public sealed partial class HubEngine
     /// or its sound does not repeat and the phone received it at least <see cref="SingleRing"/> ago.
     /// </summary>
     internal static bool HasRungEnough(ActiveAlarm alarm, DateTime now) =>
-        (alarm.ConditionCleared && now - alarm.FiredAt >= MinimumRing) ||
+        (alarm.ConditionCleared && now - alarm.FiredAt >= MinimumRing - DueSlack) ||
         (!alarm.Repeat && alarm.DeliveredAt is { } delivered && now - delivered >= SingleRing);
 
     /// <param name="selfDisabled">An alarm that turned itself off when it fired; being off does not silence it.</param>

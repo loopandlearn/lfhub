@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>LFHub</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
 
     <!-- `dotnet publish /t:PublishContainer` builds the OCI image without Docker. -->
     <ContainerBaseImage>mcr.microsoft.com/dotnet/aspnet:10.0</ContainerBaseImage>

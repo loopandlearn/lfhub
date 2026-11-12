@@ -216,8 +216,8 @@ condition) against the AlarmData LoopFollow would build from the same data and
 the device's client settings: at most one alarm per check, in LoopFollow's
 priority order; BG alarms at most once per reading and only on a reading at most
 5 minutes old; snoozes, Snooze All, Mute, and day/night windows in the phone's
-time zone. Checks run once a minute, and at once on new data, on an alarm upload
-and on `handled`. BG and devicestatus are fetched at least every 270 seconds, so
+time zone. Checks run once a minute (at the engine's 30-second tick nearest it), and at
+once on new data, on an alarm upload and on `handled`. BG and devicestatus are fetched at least every 270 seconds, so
 the missed-reading and not-looping alarms, which stay silent without a check in
 the last 6 minutes, keep working when readings stop.
 
@@ -263,7 +263,8 @@ push of an earlier firing, or of a test alarm, uses up its token and records not
   off) before it sends anything, and only while the app has neither handled an
   alarm nor uploaded its alarms since that read. Otherwise it sends nothing, and
   the check that the app's call starts runs from what the app left.
-- **Condition clears**: once the alarm has rung for a minute, received or not, the hub sends a
+- **Condition clears**: once the alarm has rung for a minute (at the engine's 30-second tick
+  nearest it), received or not, the hub sends a
   passive stop push (`lfhubStopAlarmId`) with the alarm's title and the subtitle
   "Cleared", which tells the extension to stop the system alarm. Auto-snooze on
   CGM start stops a ringing alarm the same way.
