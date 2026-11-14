@@ -176,12 +176,30 @@ public class LiveActivityTests
             r.LaToken = "activity-token";
         });
         h.Readings(120, 125);
-        h.Apns.Result = new PushResult(false, "transport: timeout", false);
+        h.Apns.Result = new PushResult(false, "429 TooManyRequests", false, 429);
         await h.ReconcileAsync();
         await h.NewDataAsync();
         h.Apns.Result = new PushResult(true, "200", false, 200);
         await h.TicksAsync(TimeSpan.FromMinutes(4.5));
         Assert.Single(h.Apns.LiveActivities);
+        await h.TicksAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(2, h.Apns.LiveActivities.Count);
+    }
+
+    [Fact]
+    public async Task UpdateWithoutAnAnswer_IsTriedAgainAtTheNextTick()
+    {
+        var h = new EngineHarness();
+        h.AddDevice(r =>
+        {
+            r.Settings = new JsonObject { ["liveActivity"] = true };
+            r.LaToken = "activity-token";
+        });
+        h.Readings(120, 125);
+        h.Apns.Result = new PushResult(false, "transport: no answer within 7000 ms", false);
+        await h.ReconcileAsync();
+        await h.NewDataAsync();
+        h.Apns.Result = new PushResult(true, "200", false, 200);
         await h.TicksAsync(TimeSpan.FromSeconds(30));
         Assert.Equal(2, h.Apns.LiveActivities.Count);
     }

@@ -721,6 +721,21 @@ public class AlarmDeliveryTests
     }
 
     [Fact]
+    public async Task Firing_GoesOutBeforeTheBadgeAndLiveActivity()
+    {
+        var h = new EngineHarness();
+        h.AlarmDevice([Low()], edit: r =>
+        {
+            r.Settings = new JsonObject { ["alarms"] = true, ["badge"] = true, ["liveActivity"] = true };
+            r.LaToken = "activity-token";
+        });
+        h.Readings(90, 70);
+        await h.ReconcileAsync();
+        await h.NewDataAsync();
+        Assert.Equal(["alarm", "badge", "liveactivity"], h.Apns.Sent);
+    }
+
+    [Fact]
     public async Task FailedDelivery_IsRecordedAndRetriedOnTheNextRepeat()
     {
         var h = new EngineHarness();
