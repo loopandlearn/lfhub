@@ -1,5 +1,6 @@
 using LFHub.Engine;
 using LFHub.Engine.Alarms;
+using LFHub.Engine.State;
 
 namespace LFHub.Tests.Alarms;
 
@@ -10,7 +11,7 @@ internal static class AlarmTestKit
     public static readonly DateTime T0 = new(2026, 7, 1, 12, 0, 0, DateTimeKind.Utc);
 
     public static readonly TimeZoneInfo Utc = TimeZoneInfo.Utc;
-    public static readonly TimeZoneInfo Stockholm = TimeZoneInfo.FindSystemTimeZoneById("Europe/Stockholm");
+    public static readonly TimeZoneInfo Stockholm = TimeZones.TryFind("Europe/Stockholm", out var zone) ? zone : throw new InvalidOperationException("no Europe/Stockholm");
 
     /// Readings oldest first at 5-minute spacing, the newest one minute before `now`.
     public static List<GlucoseValue> Bg(DateTime now, params int[] sgvs) =>
