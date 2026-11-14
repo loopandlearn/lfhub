@@ -52,6 +52,22 @@ public class BadgeAndFollowTests
     }
 
     [Fact]
+    public async Task Badge_PushWithoutAnAnswerIsTriedAgainAtTheNextTick()
+    {
+        var h = new EngineHarness();
+        var device = h.AddDevice(r => r.Settings = new JsonObject { ["badge"] = true });
+        h.Readings(120, 125);
+        h.Apns.Result = new PushResult(false, "transport: no answer within 7000 ms", false);
+        await h.ReconcileAsync();
+        await h.NewDataAsync();
+        Assert.Null(device.LastBadge);
+        h.Apns.Result = new PushResult(true, "200", false, 200);
+        await h.TicksAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(2, h.Apns.Badges.Count);
+        Assert.Equal(125, device.LastBadge);
+    }
+
+    [Fact]
     public async Task Badge_TurnedOffClearsTheLastValue()
     {
         var h = new EngineHarness();

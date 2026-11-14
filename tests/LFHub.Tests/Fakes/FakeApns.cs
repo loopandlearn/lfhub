@@ -22,6 +22,8 @@ internal sealed class FakeApns : IApnsClient
     public List<string> LatestBg { get; } = [];
     public List<SpeakPush> Speeches { get; } = [];
     public List<LiveActivityPush> LiveActivities { get; } = [];
+    /// The kinds of push in the order they went out: badge, alarm, liveactivity.
+    public List<string> Sent { get; } = [];
 
     public PushResult Result { get; set; } = new(true, "200", false, 200);
 
@@ -34,6 +36,7 @@ internal sealed class FakeApns : IApnsClient
     public Task<PushResult> SendBadgeAsync(ApnsConfig cfg, int badge, CancellationToken ct)
     {
         Badges.Add(badge);
+        Sent.Add("badge");
         return Task.FromResult(Result);
     }
 
@@ -41,6 +44,7 @@ internal sealed class FakeApns : IApnsClient
         string? sound, string? symbol, string category, bool critical, bool ring, bool ringOnce, string receipt, CancellationToken ct)
     {
         Alarms.Add(new AlarmPush(alarmId, title, subtitle, body, sound, symbol, category, critical, ring, ringOnce, receipt));
+        Sent.Add("alarm");
         OnAlarm?.Invoke();
         ct.ThrowIfCancellationRequested();
         return Task.FromResult(Result);
@@ -71,6 +75,7 @@ internal sealed class FakeApns : IApnsClient
     {
         if (ThrowOnLiveActivity) throw new InvalidOperationException("Live Activity send failed");
         LiveActivities.Add(new LiveActivityPush(token, (JsonObject)aps.DeepClone(), headers));
+        Sent.Add("liveactivity");
         return Task.FromResult(Result);
     }
 }

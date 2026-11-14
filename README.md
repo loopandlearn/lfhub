@@ -403,6 +403,13 @@ way (`Logging__LogLevel__Default`).
   database, or from the tzdb bundled with the hub where the host has none (an
   image without tzdata, or Windows with invariant globalization); the hub logs
   the bundled version at startup when it uses it.
+- The hub needs outbound HTTPS to `api.push.apple.com` and
+  `api.sandbox.push.apple.com`. It connects to their IPv6 and IPv4 addresses in
+  parallel and uses the first that answers, and logs each new connection to APNs
+  with its address, plus any address that failed first, and the proxy if the
+  environment sets one. A push that gets no answer within 7 seconds is sent once
+  more; one that fails both times is logged with the reason and time of each
+  attempt, and is tried again at the next check.
 - Connections to the sources are renewed every 15 minutes, so a changed DNS answer
   is followed.
 - On restart the hub fetches everything again; a Nightscout socket that drops
