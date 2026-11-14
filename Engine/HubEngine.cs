@@ -26,6 +26,8 @@ public sealed partial class HubEngine : BackgroundService
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ReloadEvery = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan DisconnectGrace = TimeSpan.FromMinutes(2);
+    /// A device whose push APNs refused gets no badge or Live Activity push for this long; a push that got
+    /// no answer is tried again at the next tick.
     private static readonly TimeSpan FailedPushBackoff = TimeSpan.FromMinutes(5);
     /// The patient's latest reading is written to the database at most this often.
     private static readonly TimeSpan SaveReadingEvery = TimeSpan.FromMinutes(1);
@@ -402,15 +404,15 @@ public sealed partial class HubEngine : BackgroundService
             using var alarmCheck = new CancellationTokenSource(Timeout.InfiniteTimeSpan, _time);
             using var onStop = ct.Register(() => alarmCheck.CancelAfter(AlarmCheckShutdownGrace));
 
-            // Each device's badge, Live Activity, alarms and speech run on their own, so a
-            // failure in one never holds back another.
+            // Each device's alarms, badge, Live Activity and speech run on their own, so an error in
+            // one never stops another; the alarms go first, so a slow push never delays them.
             foreach (var device in devices)
             {
-                await GuardAsync("Badge", device.Id, () => BadgeAsync(device, rt.State.LatestReading, settings[device.Id].Mmol, ct), ct);
-                await GuardAsync("Live Activity", device.Id, () => LiveActivityAsync(device, rt.State, settings[device.Id], ct), ct);
                 ct.ThrowIfCancellationRequested();
                 await GuardAsync("Alarm check", device.Id,
                     () => AlarmsAsync(device, rt.State, settings[device.Id], newData, alarmCheck.Token), alarmCheck.Token);
+                await GuardAsync("Badge", device.Id, () => BadgeAsync(device, rt.State.LatestReading, settings[device.Id].Mmol, ct), ct);
+                await GuardAsync("Live Activity", device.Id, () => LiveActivityAsync(device, rt.State, settings[device.Id], ct), ct);
                 await GuardAsync("Speak", device.Id, () => SpeakAsync(device, rt.State, settings[device.Id], ct), ct);
             }
         }
@@ -524,7 +526,7 @@ public sealed partial class HubEngine : BackgroundService
         var fresh = reading is { } r && UtcNow - r.At < StaleAfter;
         var desired = fresh ? BadgeValue(reading!.Value.Mgdl, mmol) : 0;
         if (desired == device.LastBadge) return;
-        if (device.LastPushStatus is { } s && s != "200" &&
+        if (device.LastPushStatus is { } s && s != "200" && !PushResult.IsTransportStatus(s) &&
             device.LastPushAt is { } at && UtcNow - at < FailedPushBackoff)
             return;
 
@@ -549,7 +551,8 @@ public sealed partial class HubEngine : BackgroundService
 
         var la = device.LiveActivity;
         var now = UtcNow;
-        if (la.LastPushStatus is { } s && !s.EndsWith("200") && la.LastPushAt is { } failedAt &&
+        if (la.LastPushStatus is { } s && !s.EndsWith("200") && !PushResult.IsTransportStatus(s) &&
+            la.LastPushAt is { } failedAt &&
             now - failedAt < FailedPushBackoff)
             return;
 

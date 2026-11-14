@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -15,6 +16,13 @@ public sealed record PushResult(bool Delivered, string Status, bool TokenInvalid
     public bool TokenGone => !Delivered && (Code == 410 ||
                                             Status.EndsWith(" Unregistered", StringComparison.Ordinal) ||
                                             Status.EndsWith(" BadDeviceToken", StringComparison.Ordinal));
+
+    /// <summary>The push got no answer from APNs: it could not connect, or the connection failed or timed out.</summary>
+    public bool TransportFailed => IsTransportStatus(Status);
+
+    /// <summary>A push status (alone, or after a prefix such as "start ") that says the push got no answer.</summary>
+    public static bool IsTransportStatus(string? status) =>
+        status?.Contains("transport: ", StringComparison.Ordinal) == true;
 }
 
 /// <summary>
@@ -22,31 +30,60 @@ public sealed record PushResult(bool Delivered, string Status, bool TokenInvalid
 /// provider JWTs are cached per (team, key id, SHA-256 of the key) and reused for
 /// 50 minutes, inside Apple's one-hour validity. Two devices that upload different
 /// keys under the same key id get a JWT each.
+/// A push that gets no answer within <see cref="AttemptTimeout"/> is sent once more. Connections
+/// come from <see cref="ApnsConnector"/>; HTTP/2 pings while a push waits close a connection that
+/// stopped answering, so the next attempt opens a new one.
 /// </summary>
 public sealed class ApnsClient : IApnsClient, IDisposable
 {
     private static readonly TimeSpan JwtLifetime = TimeSpan.FromMinutes(50);
     private static readonly TimeSpan MinJwtRenewal = TimeSpan.FromMinutes(20);
+    internal static readonly TimeSpan AttemptTimeout = TimeSpan.FromSeconds(7);
+    private const int Attempts = 2;
 
     private readonly HttpClient _http;
     private readonly TimeProvider _time;
+    private readonly ILogger _log;
+    private readonly TimeSpan _attemptTimeout;
 
     private readonly ConcurrentDictionary<(string Team, string KeyId, string KeyHash), (string Jwt, DateTime IssuedAt)> _jwts = new();
 
-    public ApnsClient(TimeProvider time)
-        : this(new SocketsHttpHandler
-        {
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10),
-            EnableMultipleHttp2Connections = true,
-        }, time)
+    public ApnsClient(TimeProvider time, ILogger<ApnsClient> log)
+        : this(Handler(log), time, log, AttemptTimeout)
     {
+        LogProxy();
     }
 
     /// <param name="handler">The transport to APNs; the client owns it.</param>
-    internal ApnsClient(HttpMessageHandler handler, TimeProvider time)
+    internal ApnsClient(HttpMessageHandler handler, TimeProvider time, ILogger log, TimeSpan attemptTimeout)
     {
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
+        _http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
         _time = time;
+        _log = log;
+        _attemptTimeout = attemptTimeout;
+    }
+
+    private static SocketsHttpHandler Handler(ILogger log) => new()
+    {
+        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10),
+        EnableMultipleHttp2Connections = true,
+        ConnectTimeout = TimeSpan.FromSeconds(6),
+        ConnectCallback = new ApnsConnector(log).ConnectAsync,
+        KeepAlivePingDelay = TimeSpan.FromSeconds(3),
+        KeepAlivePingTimeout = TimeSpan.FromSeconds(3),
+        KeepAlivePingPolicy = HttpKeepAlivePingPolicy.WithActiveRequests,
+    };
+
+    /// Logs the proxy the environment routes APNs through, if any.
+    private void LogProxy()
+    {
+        foreach (var host in new[] { "api.push.apple.com", "api.sandbox.push.apple.com" })
+        {
+            var uri = new Uri($"https://{host}/");
+            var proxy = HttpClient.DefaultProxy.GetProxy(uri);
+            if (proxy is not null && proxy != uri)
+                _log.LogInformation("APNs requests to {Host} go through the proxy {Proxy}", host, proxy.GetLeftPart(UriPartial.Authority));
+        }
     }
 
     private DateTime UtcNow => _time.GetUtcNow().UtcDateTime;
@@ -232,37 +269,70 @@ public sealed class ApnsClient : IApnsClient, IDisposable
             return new PushResult(false, $"key error: {ex.Message}", false);
         }
 
-        // A header value or token the request does not accept fails this push only.
-        HttpRequestMessage req;
-        try
+        var failures = new List<string>();
+        for (var attempt = 1; attempt <= Attempts; attempt++)
         {
-            req = Request(cfg, deviceToken, topic, payload, pushType, priority, jwt, headers);
-        }
-        catch (Exception ex)
-        {
-            return new PushResult(false, $"request: {ex.Message}", false);
-        }
-
-        using (req)
-        {
+            // A header value or token the request does not accept fails this push only.
+            HttpRequestMessage req;
             try
             {
-                using var resp = await _http.SendAsync(req, ct);
-                if (resp.IsSuccessStatusCode)
-                    return new PushResult(true, "200", false, 200);
-
-                var body = await resp.Content.ReadAsStringAsync(ct);
-                var reason = TryReason(body);
-                var code = (int)resp.StatusCode;
-                if (code == 403) DropJwt(cfg, reason);
-                var tokenInvalid = code is 404 or 410 || reason is "BadDeviceToken" or "Unregistered" or "DeviceTokenNotForTopic";
-                return new PushResult(false, $"{code} {reason}", tokenInvalid, code);
+                req = Request(cfg, deviceToken, topic, payload, pushType, priority, jwt, headers);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            catch (Exception ex)
             {
-                return new PushResult(false, $"transport: {ex.GetBaseException().Message}", false);
+                return new PushResult(false, $"request: {ex.Message}", false);
+            }
+
+            using (req)
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                deadline.CancelAfter(_attemptTimeout);
+                var watch = Stopwatch.StartNew();
+                try
+                {
+                    using var resp = await _http.SendAsync(req, deadline.Token);
+                    if (failures.Count > 0)
+                        _log.LogWarning("APNs answered {Host} push on attempt {Attempt}; failed first: {Failures}",
+                            req.RequestUri!.Host, attempt, string.Join("; ", failures));
+                    if (resp.IsSuccessStatusCode)
+                        return new PushResult(true, "200", false, 200);
+
+                    var body = await resp.Content.ReadAsStringAsync(ct);
+                    var reason = TryReason(body);
+                    var code = (int)resp.StatusCode;
+                    if (code == 403) DropJwt(cfg, reason);
+                    var tokenInvalid = code is 404 or 410 || reason is "BadDeviceToken" or "Unregistered" or "DeviceTokenNotForTopic";
+                    return new PushResult(false, $"{code} {reason}", tokenInvalid, code);
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    failures.Add(TransportFailure(ex, deadline.IsCancellationRequested, watch.Elapsed));
+                }
             }
         }
+        return new PushResult(false, $"transport: {string.Join("; then ", failures)}", false);
+    }
+
+    /// <summary>
+    /// What went wrong on the way to APNs: no answer in time, or the request error and its
+    /// innermost message, with how long the attempt took.
+    /// </summary>
+    internal static string TransportFailure(Exception ex, bool timedOut, TimeSpan elapsed)
+    {
+        var ms = (long)elapsed.TotalMilliseconds;
+        if (timedOut) return $"no answer within {ms} ms";
+        var error = FindRequestError(ex);
+        var message = ex.GetBaseException().Message;
+        return error is { } e and not HttpRequestError.Unknown
+            ? $"{e}: {message} ({ms} ms)"
+            : $"{message} ({ms} ms)";
+    }
+
+    private static HttpRequestError? FindRequestError(Exception? ex)
+    {
+        for (; ex is not null; ex = ex.InnerException)
+            if (ex is HttpRequestException h) return h.HttpRequestError;
+        return null;
     }
 
     private static HttpRequestMessage Request(ApnsConfig cfg, string deviceToken, string topic, JsonObject payload,

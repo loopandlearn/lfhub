@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using LFHub.Apns;
 using LFHub.Db;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
 namespace LFHub.Tests.Apns;
@@ -18,7 +19,7 @@ public sealed class ApnsClientTests : IDisposable
     private readonly ApnsClient _client;
     private readonly ECDsa _key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
-    public ApnsClientTests() => _client = new ApnsClient(_server, _time);
+    public ApnsClientTests() => _client = new ApnsClient(_server, _time, NullLogger.Instance, TimeSpan.FromMilliseconds(200));
 
     public void Dispose()
     {
@@ -173,6 +174,67 @@ public sealed class ApnsClientTests : IDisposable
     }
 
     [Fact]
+    public async Task TransportFailure_IsSentOnceMore()
+    {
+        var calls = 0;
+        _server.Respond = _ => ++calls == 1 ? throw new HttpRequestException("connection reset") : new HttpResponseMessage(HttpStatusCode.OK);
+        var result = await AlarmAsync(Config());
+        Assert.True(result.Delivered);
+        Assert.Equal(2, _server.Requests.Count);
+        Assert.Equal(_server.Requests[0].Body, _server.Requests[1].Body);
+    }
+
+    [Fact]
+    public async Task TransportFailureTwice_NamesBothAttempts()
+    {
+        _server.Respond = _ => throw new HttpRequestException(HttpRequestError.ConnectionError, "connection refused");
+        var result = await AlarmAsync(Config());
+        Assert.False(result.Delivered);
+        Assert.True(result.TransportFailed);
+        Assert.Equal(2, _server.Requests.Count);
+        Assert.Matches(@"^transport: ConnectionError: connection refused \(\d+ ms\); then ConnectionError: connection refused \(\d+ ms\)$",
+            result.Status);
+    }
+
+    [Fact]
+    public async Task NoAnswerInTime_IsSentOnceMore()
+    {
+        var calls = 0;
+        _server.Wait = ct => ++calls == 1 ? Task.Delay(Timeout.Infinite, ct) : Task.CompletedTask;
+        var result = await AlarmAsync(Config());
+        Assert.True(result.Delivered);
+        Assert.Equal(2, _server.Requests.Count);
+    }
+
+    [Fact]
+    public async Task NoAnswerTwice_SaysSo()
+    {
+        _server.Wait = ct => Task.Delay(Timeout.Infinite, ct);
+        var result = await AlarmAsync(Config());
+        Assert.Matches(@"^transport: no answer within \d+ ms; then no answer within \d+ ms$", result.Status);
+    }
+
+    [Fact]
+    public async Task ApnsRefusal_IsNotSentAgain()
+    {
+        _server.Respond = _ => Answer(400, "BadTopic");
+        var result = await AlarmAsync(Config());
+        Assert.Equal("400 BadTopic", result.Status);
+        Assert.False(result.TransportFailed);
+        Assert.Single(_server.Requests);
+    }
+
+    [Theory]
+    [InlineData("transport: no answer within 7000 ms", true)]
+    [InlineData("start transport: could not connect", true)]
+    [InlineData("200", false)]
+    [InlineData("start 200", false)]
+    [InlineData("429 TooManyRequests", false)]
+    [InlineData(null, false)]
+    public void TransportStatus_IsRecognizedWithOrWithoutAPrefix(string? status, bool expected) =>
+        Assert.Equal(expected, PushResult.IsTransportStatus(status));
+
+    [Fact]
     public async Task HeaderValueTheRequestRefuses_IsAPushResult()
     {
         var result = await AlarmAsync(Config(bundleId: "org.example.app\nX-Other: 1"));
@@ -219,12 +281,16 @@ public sealed class ApnsClientTests : IDisposable
 
         public Func<HttpRequestMessage, HttpResponseMessage> Respond { get; set; } = _ => new HttpResponseMessage(HttpStatusCode.OK);
 
+        /// Runs before each answer, with the request's token.
+        public Func<CancellationToken, Task> Wait { get; set; } = _ => Task.CompletedTask;
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             var headers = request.Headers.ToDictionary(h => h.Key.ToLowerInvariant(), h => string.Join(",", h.Value));
             Requests.Add(new Received(request.Method, request.RequestUri!, request.Version, headers,
                 await request.Content!.ReadAsStringAsync(cancellationToken)));
+            await Wait(cancellationToken);
             return Respond(request);
         }
     }
