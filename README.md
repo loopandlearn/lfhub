@@ -399,6 +399,10 @@ way (`Logging__LogLevel__Default`).
   patient that cannot be followed (no Nightscout URL, and no Dexcom account that
   opens under the master key) is logged as an error at each reload and skipped;
   the engine keeps running.
+- Time zones (the phones' and the Nightscout profile's) come from the host's IANA
+  database, or from the tzdb bundled with the hub where the host has none (an
+  image without tzdata, or Windows with invariant globalization); the hub logs
+  the bundled version at startup when it uses it.
 - Connections to the sources are renewed every 15 minutes, so a changed DNS answer
   is followed.
 - On restart the hub fetches everything again; a Nightscout socket that drops

@@ -2,6 +2,7 @@ using LFHub.Api;
 using LFHub.Apns;
 using LFHub.Db;
 using LFHub.Engine;
+using LFHub.Engine.State;
 using Npgsql;
 
 var builder = WebApplication.CreateSlimBuilder(args);
@@ -42,6 +43,9 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<HubEngine>());
 
 var app = builder.Build();
 app.Services.GetRequiredService<HubStore>().Migrate();
+if (!TimeZoneInfo.TryFindSystemTimeZoneById("America/New_York", out _))
+    app.Logger.LogInformation("The host has no IANA time zone database; time zones come from the bundled tzdb {Version}",
+        TimeZones.BundledVersion);
 app.UseResponseCompression();
 HubApi.Map(app, Required("LFHUB_SETUP_TOKEN"),
     builder.Configuration["LFHUB_STATUS_KEY"] is { Length: > 0 } statusKey ? statusKey : null, allowPrivateSources);

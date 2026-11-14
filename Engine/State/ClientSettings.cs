@@ -139,13 +139,11 @@ public sealed record ClientSettings
     }
 
     /// <summary>
-    /// The zone named by "timeZone", or null when it is missing or this host does not know it.
+    /// The zone named by "timeZone", or null when it is missing or not an IANA zone.
     /// Without one, day and night, "today" and local times are taken in UTC.
     /// </summary>
     public static TimeZoneInfo? ResolveTimeZone(JsonObject json) =>
-        Swift.Str(json, "timeZone") is { Length: > 0 } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone)
-            ? zone
-            : null;
+        TimeZones.TryFind(Swift.Str(json, "timeZone"), out var zone) ? zone : null;
 
     private static bool? StrictBool(JsonObject json, string key) =>
         json[key] is JsonValue v && v.GetValueKind() is JsonValueKind.True or JsonValueKind.False ? v.GetValue<bool>() : null;

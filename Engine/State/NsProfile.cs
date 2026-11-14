@@ -122,8 +122,8 @@ internal sealed partial class NsProfile
     /// ProfileManager.getTimeZone, with null for its TimeZone.current fallback.
     private static TimeZoneInfo? ResolveZone(string id)
     {
-        if (TimeZoneInfo.TryFindSystemTimeZoneById(id, out var tz)) return tz;
-        if (TimeZoneInfo.TryFindSystemTimeZoneById(id.Replace("ETC/", "Etc/"), out tz)) return tz;
+        if (TimeZones.TryFind(id, out var tz)) return tz;
+        if (TimeZones.TryFind(id.Replace("ETC/", "Etc/"), out tz)) return tz;
         var upper = id.ToUpperInvariant();
         if (upper.Contains("GMT"))
         {
