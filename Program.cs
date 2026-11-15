@@ -4,6 +4,8 @@ using LFHub.Db;
 using LFHub.Engine;
 using LFHub.Engine.State;
 using Npgsql;
+using System.Reflection;
+using System.Runtime.InteropServices;
 
 var builder = WebApplication.CreateSlimBuilder(args);
 var logBuffer = new HubLogBuffer();
@@ -42,6 +44,10 @@ builder.Services.AddSingleton(sp => new HubEngine(sp.GetRequiredService<IHubStor
 builder.Services.AddHostedService(sp => sp.GetRequiredService<HubEngine>());
 
 var app = builder.Build();
+app.Logger.LogInformation("LF Hub {Version} starting on {Runtime}, {Os} {Arch}{Container}",
+    typeof(HubApi).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown",
+    RuntimeInformation.FrameworkDescription, RuntimeInformation.OSDescription, RuntimeInformation.OSArchitecture,
+    Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") == "true" ? ", in a container" : "");
 app.Services.GetRequiredService<HubStore>().Migrate();
 if (!TimeZoneInfo.TryFindSystemTimeZoneById("America/New_York", out _))
     app.Logger.LogInformation("The host has no IANA time zone database; time zones come from the bundled tzdb {Version}",

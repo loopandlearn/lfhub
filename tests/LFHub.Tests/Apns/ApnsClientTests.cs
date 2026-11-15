@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using LFHub.Apns;
 using LFHub.Db;
+using LFHub.Tests.Fakes;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
@@ -58,7 +59,7 @@ public sealed class ApnsClientTests : IDisposable
     public async Task AlarmPush_CarriesAppleHeadersThePayloadAndASignedJwt()
     {
         var result = await AlarmAsync(Config());
-        Assert.Equal(new PushResult(true, "200", false, 200), result);
+        Assert.Equal(new PushResult(true, "200", false, 200, result.Ms, 1), result);
 
         var request = Assert.Single(_server.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
@@ -182,6 +183,39 @@ public sealed class ApnsClientTests : IDisposable
         Assert.True(result.Delivered);
         Assert.Equal(2, _server.Requests.Count);
         Assert.Equal(_server.Requests[0].Body, _server.Requests[1].Body);
+    }
+
+    [Fact]
+    public async Task AnsweredRetry_SaysWhichAttemptAndLogsTheConnectionsBeforeTheFailure()
+    {
+        var log = new ListLogger();
+        using var client = new ApnsClient(_server, _time, log, TimeSpan.FromMilliseconds(200));
+        var calls = 0;
+        _server.Respond = _ => ++calls == 1 ? throw new HttpRequestException("connection reset") : new HttpResponseMessage(HttpStatusCode.OK);
+        var result = await client.SendBadgeAsync(Config(), 1, CancellationToken.None);
+        Assert.True(result.Delivered);
+        Assert.Equal(2, result.Attempt);
+        Assert.Contains(log.Lines, l => l.StartsWith("Warning: APNs answered", StringComparison.Ordinal) &&
+                                        l.Contains("; connections before the failed attempt: ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task NoAnswer_LogsTheConnectionsBeforeTheFirstFailure()
+    {
+        var log = new ListLogger();
+        using var client = new ApnsClient(_server, _time, log, TimeSpan.FromMilliseconds(200));
+        _server.Respond = _ => throw new HttpRequestException("connection reset");
+        var result = await client.SendBadgeAsync(Config(), 1, CancellationToken.None);
+        Assert.Equal(0, result.Attempt);
+        Assert.Contains(log.Lines, l => l.StartsWith("Warning: APNs push got no answer; connections before the first failed attempt: ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void IdleConnections_CloseWellBeforeAMinute_AndArePingedOnlyWhileAPushWaits()
+    {
+        using var handler = ApnsClient.Handler(NullLogger.Instance);
+        Assert.True(handler.PooledConnectionIdleTimeout * 1.25 < TimeSpan.FromSeconds(40));
+        Assert.Equal(HttpKeepAlivePingPolicy.WithActiveRequests, handler.KeepAlivePingPolicy);
     }
 
     [Fact]

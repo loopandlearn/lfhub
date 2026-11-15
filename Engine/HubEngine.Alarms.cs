@@ -360,7 +360,8 @@ public sealed partial class HubEngine
             receipt, ct);
         await TrackPushAsync(device.Id, result, PushKind.Alarm);
         if (result.Delivered)
-            _log.LogInformation("Alarm {Alarm} delivered to {Device}", alarm.AlarmId, device.Id);
+            _log.LogInformation("Alarm {Alarm} delivered to {Device} in {Ms} ms (attempt {Attempt})", alarm.AlarmId,
+                device.Id, result.Ms, result.Attempt);
         else
             _log.LogWarning("Alarm {Alarm} delivery to {Device} failed: {Status}", alarm.AlarmId, device.Id, result.Status);
 

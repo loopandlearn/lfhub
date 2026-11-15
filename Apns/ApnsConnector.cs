@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -9,13 +10,15 @@ namespace LFHub.Apns;
 /// a new attempt starting every <see cref="Stagger"/> while the earlier ones are still pending,
 /// each given at most <see cref="AttemptTimeout"/>; the first to connect is used. A network that
 /// drops one address family therefore costs a moment, not a request. Each new connection is
-/// logged with its address, its family and the attempts that failed before it.
+/// numbered and logged with its address, its family, whether the address is Apple's and the
+/// attempts that failed before it; <see cref="ApnsConnection"/> logs it again when it closes.
 /// </summary>
 internal sealed class ApnsConnector(ILogger log)
 {
     internal static readonly TimeSpan Stagger = TimeSpan.FromMilliseconds(250);
     internal static readonly TimeSpan AttemptTimeout = TimeSpan.FromSeconds(3);
     private const int MaxAttempts = 6;
+    private static readonly ConcurrentDictionary<string, IPAddress[]> LastResolved = new();
 
     internal delegate Task<Socket> Connect(IPAddress address, int port, CancellationToken ct);
 
@@ -26,20 +29,22 @@ internal sealed class ApnsConnector(ILogger log)
         var watch = Stopwatch.StartNew();
         var addresses = IPAddress.TryParse(host.Trim('[', ']'), out var literal)
             ? [literal]
-            : await Dns.GetHostAddressesAsync(host, ct);
+            : await ResolveAsync(host, ct);
         var failures = new List<string>();
-        Socket socket;
         try
         {
-            (socket, var address) = await ConnectFirstAsync(Interleave(addresses), port, ConnectSocketAsync, Stagger,
+            var (socket, address) = await ConnectFirstAsync(Interleave(addresses), port, ConnectSocketAsync, Stagger,
                 AttemptTimeout, failures, ct);
             var ms = watch.ElapsedMilliseconds;
+            var connection = new ApnsConnection(new NetworkStream(socket, ownsSocket: true), host, address, log);
+            var network = AppleNetwork.Contains(address) ? "Apple's network" : "outside Apple's network";
             if (failures.Count == 0)
-                log.LogInformation("APNs connected to {Host} at {Address} ({Family}) in {Ms} ms", host, address,
-                    Family(address), ms);
+                log.LogInformation("APNs connection #{Id} to {Host} at {Address} ({Family}, {Network}) in {Ms} ms",
+                    connection.Id, host, address, connection.Family, network, ms);
             else
-                log.LogWarning("APNs connected to {Host} at {Address} ({Family}) in {Ms} ms; failed first: {Failures}",
-                    host, address, Family(address), ms, string.Join("; ", failures));
+                log.LogWarning("APNs connection #{Id} to {Host} at {Address} ({Family}, {Network}) in {Ms} ms; failed first: {Failures}",
+                    connection.Id, host, address, connection.Family, network, ms, string.Join("; ", failures));
+            return connection;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
@@ -49,7 +54,35 @@ internal sealed class ApnsConnector(ILogger log)
             throw new HttpRequestException(HttpRequestError.ConnectionError, $"could not connect to {host}: {reason}",
                 ex);
         }
-        return new NetworkStream(socket, ownsSocket: true);
+    }
+
+    /// <summary>
+    /// The host's addresses from DNS. When DNS fails or answers with none, the addresses of its
+    /// last good answer are used, so a resolver outage does not hold back pushes.
+    /// </summary>
+    private async Task<IPAddress[]> ResolveAsync(string host, CancellationToken ct)
+    {
+        try
+        {
+            var addresses = await Dns.GetHostAddressesAsync(host, ct);
+            if (addresses.Length > 0)
+            {
+                LastResolved[host] = addresses;
+                return addresses;
+            }
+            if (LastResolved.TryGetValue(host, out var last))
+            {
+                log.LogWarning("APNs host {Host} resolves to no addresses; using its last {Count}", host, last.Length);
+                return last;
+            }
+            return addresses;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested && LastResolved.TryGetValue(host, out var last))
+        {
+            log.LogWarning("APNs host {Host} does not resolve ({Reason}); using its last {Count} addresses", host,
+                ex.Message, last.Length);
+            return last;
+        }
     }
 
     /// <summary>The addresses alternating by family, the family of the first one leading.</summary>
@@ -144,9 +177,6 @@ internal sealed class ApnsConnector(ILogger log)
         null => "failed",
         _ => ex.Message,
     };
-
-    private static string Family(IPAddress address) =>
-        address.AddressFamily == AddressFamily.InterNetworkV6 ? "IPv6" : "IPv4";
 
     private static async Task<Socket> ConnectSocketAsync(IPAddress address, int port, CancellationToken ct)
     {
