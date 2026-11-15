@@ -154,6 +154,26 @@ spec:
 
 Expose the service through your ingress with TLS.
 
+### CapRover
+
+[`caprover/lfhub.yml`](../caprover/lfhub.yml) is a one-click app that runs the hub
+and its PostgreSQL. In CapRover, open Apps → One-Click Apps/Databases, choose
+TEMPLATE at the end of the list and paste the file's contents. Give the app a name
+(it becomes `<name>.<your root domain>`), paste the master key from step 1, and keep
+the generated setup token, status key and database password or replace them with
+your own. After the deploy, open the app, enable HTTPS and turn on Force HTTPS.
+The setup token and status key are under the app's App Configs → Environmental
+Variables; keep them in your password manager.
+
+Keep the app at one instance (the hub holds a database lock, so a second one would
+only stand by). To upgrade, open the app's Deployment tab and deploy the same
+image again, for example `ghcr.io/loopandlearn/lfhub:dev`.
+
+To deploy your own checkout instead of the published image, the repository's
+`captain-definition` builds the `Dockerfile` on the CapRover server. Run
+`caprover deploy` in the repository, or connect the app to your fork under
+Deployment → Method 3. The build needs about 1 GB of free memory on the server.
+
 Check that it answers: `https://hub.example.com/healthz` should say `ok`.
 
 ## 3. Connect the first phone
