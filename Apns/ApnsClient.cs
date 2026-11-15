@@ -10,7 +10,10 @@ using LFHub.Db;
 namespace LFHub.Apns;
 
 /// <param name="Code">HTTP status from APNs; 0 when the request never got an answer.</param>
-public sealed record PushResult(bool Delivered, string Status, bool TokenInvalid, int Code = 0)
+/// <param name="Ms">From the first attempt to APNs' answer; 0 when there was none.</param>
+/// <param name="Attempt">The attempt APNs answered; 0 when none was answered.</param>
+public sealed record PushResult(bool Delivered, string Status, bool TokenInvalid, int Code = 0, long Ms = 0,
+    int Attempt = 0)
 {
     /// <summary>APNs rejected the token as unregistered or invalid: 410, <c>Unregistered</c> or <c>BadDeviceToken</c>.</summary>
     public bool TokenGone => !Delivered && (Code == 410 ||
@@ -32,13 +35,18 @@ public sealed record PushResult(bool Delivered, string Status, bool TokenInvalid
 /// keys under the same key id get a JWT each.
 /// A push that gets no answer within <see cref="AttemptTimeout"/> is sent once more. Connections
 /// come from <see cref="ApnsConnector"/>; HTTP/2 pings while a push waits close a connection that
-/// stopped answering, so the next attempt opens a new one.
+/// stopped answering, so the next attempt opens a new one. A connection without a push for
+/// <see cref="IdleTimeout"/> is closed, so pushes do not wait on a connection that a firewall or
+/// NAT on the way has silently forgotten.
 /// </summary>
 public sealed class ApnsClient : IApnsClient, IDisposable
 {
     private static readonly TimeSpan JwtLifetime = TimeSpan.FromMinutes(50);
     private static readonly TimeSpan MinJwtRenewal = TimeSpan.FromMinutes(20);
     internal static readonly TimeSpan AttemptTimeout = TimeSpan.FromSeconds(7);
+    /// The handler closes idle connections on a timer that runs every quarter of this, so a
+    /// connection is closed 30 to 37.5 s after its last push.
+    internal static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(30);
     private const int Attempts = 2;
 
     private readonly HttpClient _http;
@@ -52,6 +60,7 @@ public sealed class ApnsClient : IApnsClient, IDisposable
         : this(Handler(log), time, log, AttemptTimeout)
     {
         LogProxy();
+        _ = AppleNetwork.LogResolutionAsync(log);
     }
 
     /// <param name="handler">The transport to APNs; the client owns it.</param>
@@ -63,9 +72,9 @@ public sealed class ApnsClient : IApnsClient, IDisposable
         _attemptTimeout = attemptTimeout;
     }
 
-    private static SocketsHttpHandler Handler(ILogger log) => new()
+    internal static SocketsHttpHandler Handler(ILogger log) => new()
     {
-        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10),
+        PooledConnectionIdleTimeout = IdleTimeout,
         EnableMultipleHttp2Connections = true,
         ConnectTimeout = TimeSpan.FromSeconds(6),
         ConnectCallback = new ApnsConnector(log).ConnectAsync,
@@ -270,6 +279,8 @@ public sealed class ApnsClient : IApnsClient, IDisposable
         }
 
         var failures = new List<string>();
+        string? openAtFailure = null;
+        var total = Stopwatch.StartNew();
         for (var attempt = 1; attempt <= Attempts; attempt++)
         {
             // A header value or token the request does not accept fails this push only.
@@ -287,29 +298,32 @@ public sealed class ApnsClient : IApnsClient, IDisposable
             using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
                 deadline.CancelAfter(_attemptTimeout);
+                var openBefore = ApnsConnection.DescribeOpen();
                 var watch = Stopwatch.StartNew();
                 try
                 {
                     using var resp = await _http.SendAsync(req, deadline.Token);
                     if (failures.Count > 0)
-                        _log.LogWarning("APNs answered {Host} push on attempt {Attempt}; failed first: {Failures}",
-                            req.RequestUri!.Host, attempt, string.Join("; ", failures));
+                        _log.LogWarning("APNs answered {Host} push on attempt {Attempt}; failed first: {Failures}; connections before the failed attempt: {Open}",
+                            req.RequestUri!.Host, attempt, string.Join("; ", failures), openAtFailure);
                     if (resp.IsSuccessStatusCode)
-                        return new PushResult(true, "200", false, 200);
+                        return new PushResult(true, "200", false, 200, total.ElapsedMilliseconds, attempt);
 
                     var body = await resp.Content.ReadAsStringAsync(ct);
                     var reason = TryReason(body);
                     var code = (int)resp.StatusCode;
                     if (code == 403) DropJwt(cfg, reason);
                     var tokenInvalid = code is 404 or 410 || reason is "BadDeviceToken" or "Unregistered" or "DeviceTokenNotForTopic";
-                    return new PushResult(false, $"{code} {reason}", tokenInvalid, code);
+                    return new PushResult(false, $"{code} {reason}", tokenInvalid, code, total.ElapsedMilliseconds, attempt);
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
                     failures.Add(TransportFailure(ex, deadline.IsCancellationRequested, watch.Elapsed));
+                    openAtFailure ??= openBefore;
                 }
             }
         }
+        _log.LogWarning("APNs push got no answer; connections before the first failed attempt: {Open}", openAtFailure);
         return new PushResult(false, $"transport: {string.Join("; then ", failures)}", false);
     }
 
