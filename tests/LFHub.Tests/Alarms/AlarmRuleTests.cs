@@ -153,8 +153,24 @@ public class AlarmRuleTests
         Assert.True(Eval([playNight], Data(at10, [200, 210]), at10, cfg: cfg).Fire!.PlaySound);
         Assert.True(Fires(Eval([nightOnly], Data(at10, [200, 210]), at10, cfg: cfg), nightOnly));
         var at21 = T0.Date.AddHours(21);
-        Assert.True(Eval([nightOnly], Data(at21, [200, 210]), at21, cfg: cfg).Fire?.PlaySound);
+        Assert.False(Fires(Eval([nightOnly], Data(at21, [200, 210]), at21, cfg: cfg), nightOnly));
         Assert.False(Eval([playNight], Data(at21, [200, 210]), at21, cfg: cfg).Fire!.PlaySound);
+    }
+
+    [Fact]
+    public void NightStartingAtMidnight_EndsAtDayStart()
+    {
+        var cfg = Cfg();
+        cfg.DayStart = new TimeOfDay(7, 0);
+        cfg.NightStart = new TimeOfDay(0, 0);
+        var dayOnly = A(AlarmType.High, a => a.ActiveOption = ActiveOption.Day);
+        var nightOnly = A(AlarmType.High, a => a.ActiveOption = ActiveOption.Night);
+        var at12 = T0.Date.AddHours(12);
+        Assert.True(Fires(Eval([dayOnly], Data(at12, [200, 210]), at12, cfg: cfg), dayOnly));
+        Assert.False(Fires(Eval([nightOnly], Data(at12, [200, 210]), at12, cfg: cfg), nightOnly));
+        var at3 = T0.Date.AddHours(3);
+        Assert.False(Fires(Eval([dayOnly], Data(at3, [200, 210]), at3, cfg: cfg), dayOnly));
+        Assert.True(Fires(Eval([nightOnly], Data(at3, [200, 210]), at3, cfg: cfg), nightOnly));
     }
 
     [Fact]
