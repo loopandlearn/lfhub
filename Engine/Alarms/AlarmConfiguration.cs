@@ -23,5 +23,17 @@ public sealed class AlarmConfiguration
     public bool AutoSnoozeCGMStart { get; set; }
     public bool EnableVolumeButtonSnooze { get; set; }
 
+    /// Night runs from NightStart up to the next DayStart, wrapping past midnight when
+    /// NightStart is later in the day than DayStart (AlarmConfiguration.isNight(at:)).
+    public bool IsNight(TimeSpan localTimeOfDay)
+    {
+        var now = localTimeOfDay.Hours * 60 + localTimeOfDay.Minutes;
+        var day = DayStart.MinutesSinceMidnight;
+        var night = NightStart.MinutesSinceMidnight;
+        return night >= day
+            ? now >= night || now < day
+            : now >= night && now < day;
+    }
+
     public AlarmConfiguration Clone() => (AlarmConfiguration)MemberwiseClone();
 }

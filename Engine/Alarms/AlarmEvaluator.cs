@@ -194,10 +194,7 @@ public static class AlarmEvaluator
         if (alarm.SnoozedUntil is { } until && until > now) return false;
         if (!PassesBGLimits(condition, alarm, data)) return false;
 
-        var local = TimeZoneInfo.ConvertTimeFromUtc(now, timeZone);
-        var nowMin = local.Hour * 60 + local.Minute;
-        // This guard does not handle a night that starts before the day (AlarmCondition.swift:77); trigger() does.
-        var isNight = nowMin < config.DayStart.MinutesSinceMidnight || nowMin >= config.NightStart.MinutesSinceMidnight;
+        var isNight = config.IsNight(TimeZoneInfo.ConvertTimeFromUtc(now, timeZone).TimeOfDay);
         if (alarm.ActiveOption == ActiveOption.Day && isNight) return false;
         if (alarm.ActiveOption == ActiveOption.Night && !isNight) return false;
 
@@ -233,12 +230,7 @@ public static class AlarmEvaluator
     {
         var playSound = !(config.MuteUntil is { } mute && mute > now);
 
-        var local = TimeZoneInfo.ConvertTimeFromUtc(now, timeZone).TimeOfDay;
-        var dayStart = new TimeSpan(config.DayStart.Hour, config.DayStart.Minute, 0);
-        var nightStart = new TimeSpan(config.NightStart.Hour, config.NightStart.Minute, 0);
-        var isNight = nightStart >= dayStart
-            ? local >= nightStart || local < dayStart
-            : local >= nightStart && local < dayStart;
+        var isNight = config.IsNight(TimeZoneInfo.ConvertTimeFromUtc(now, timeZone).TimeOfDay);
         var isDay = !isNight;
 
         switch (alarm.PlaySoundOption)
